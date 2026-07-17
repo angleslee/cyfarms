@@ -48,6 +48,7 @@ header{
   position:sticky; top:0; z-index:20; background:linear-gradient(var(--bg), var(--bg) 72%, rgba(243,241,233,0));
 }
 header .brand{display:flex; align-items:center; gap:9px; min-width:0}
+svg{width:18px; height:18px; flex:none}   /* base icon size — unsized SVG defaults to 300×150px otherwise */
 header .mark{width:26px; height:26px; flex:none}
 header h1{font-size:19px; margin:0; letter-spacing:-.4px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 header .r{display:flex; align-items:center; gap:8px; flex:none}
@@ -98,7 +99,15 @@ nav button.record{position:relative}
 .badge.done{background:var(--line2); color:var(--muted)}
 .cropbar{height:6px; border-radius:99px; background:var(--line2); margin:11px 0 6px; overflow:hidden}
 .cropbar i{display:block; height:100%; border-radius:99px; background:linear-gradient(90deg, var(--amber), var(--field)); transition:width .3s}
+.cropcard .ctop > svg{width:16px; height:16px; color:var(--faint); margin-top:4px}
 .cropcard .cfoot{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px}
+/* coming-up schedule */
+.uprow{display:flex; gap:12px; padding:11px 15px; border-bottom:1px solid var(--line2)}
+.uprow:last-child{border-bottom:none}
+.uprow .ud{flex:none; width:88px; font-weight:800; font-size:13px; color:var(--muted); padding-top:1px}
+.uprow.tdy .ud{color:var(--field)}
+.uprow .uc{flex:1; font-size:13.5px; line-height:1.55; color:var(--ink)}
+.uprow .uc b{font-weight:800}
 .cropcard .cstat{font-size:12.5px; color:var(--muted); font-weight:600}
 .collectbtn{display:inline-flex; align-items:center; gap:6px; font-weight:800; font-size:13.5px; color:#fff; background:var(--field); padding:9px 14px; border-radius:11px; transition:transform .06s}
 .collectbtn:active{transform:scale(.96)}
@@ -190,6 +199,7 @@ label.f:first-child{margin-top:2px}
 .erow .em .t1{font-weight:700; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .erow .em .t2{font-size:12.5px; color:var(--muted); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px}
 .erow .ea{text-align:right; flex:none}
+.erow .ea svg{width:16px; height:16px; color:var(--faint); vertical-align:middle}
 .erow .ea .a1{font-weight:800; font-size:15px; letter-spacing:-.3px}
 .erow .ea .a1.pos{color:var(--sale)} .erow .ea .a1.neg{color:var(--exp)}
 .erow .ea .a2{font-size:11.5px; color:var(--faint); font-weight:600; margin-top:1px}
@@ -221,6 +231,7 @@ label.f:first-child{margin-top:2px}
 .savebtn:active{transform:scale(.99)}
 .ghostbtn{width:100%; padding:14px; border-radius:12px; font-weight:700; font-size:15px; color:var(--muted); margin-top:10px; border:1px solid var(--line); background:#fff}
 .linkbtn{background:none; color:var(--field); font-weight:700; font-size:14px; padding:6px}
+.linkbtn svg{width:16px; height:16px; vertical-align:-3px}
 .addlinebtn{width:100%; padding:13px; border-radius:12px; font-weight:800; font-size:14.5px; color:var(--field); border:1.5px dashed var(--line); background:#fff; display:flex; align-items:center; justify-content:center; gap:7px; margin-top:6px}
 .addlinebtn .ic{width:17px; height:17px}
 .dangerbtn{color:var(--exp)}
@@ -703,7 +714,7 @@ function sparkline(vals, w, h, color){
   const pts=vals.map((v,i)=>[i*step, h - (Math.abs(v)/max)*(h-4) - 2]);
   const d=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
   const area=d+` L ${w} ${h} L 0 ${h} Z`;
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" aria-hidden="true">
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px" preserveAspectRatio="none" aria-hidden="true">
     <path d="${area}" fill="${color}" opacity=".16"/>
     <path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     ${pts.length?`<circle cx="${pts[pts.length-1][0].toFixed(1)}" cy="${pts[pts.length-1][1].toFixed(1)}" r="3" fill="${color}"/>`:''}
@@ -1719,6 +1730,7 @@ function renderCrops(){
   let html=`<div class="actionrow" style="margin-top:4px">
     <button class="bigbtn pri" onclick="openCropForm()">${svg('plus','ic')} New planting</button>
   </div>`;
+  html+=upcomingHTML();
 
   if(!act.length && !past.length){
     html+=`<div class="card" style="margin-top:14px"><div class="mini-empty">${svg('sprout','ic')}No plantings yet.<br>Record what's in the ground and Field Ledger will tell you<br><b>which farm to visit, and when</b>.</div></div>`;
@@ -1980,11 +1992,23 @@ function collectionLogHTML(pid){
     const cs=collectionSales(p, d);
     rows+=`<div class="runrow" style="padding:9px 2px">
       <div class="rmain"><div class="r1" style="font-size:14px">${dowLabel(d)} ${shortDate(d)}${d===todayStr()?' · today':''}</div>
-      <div class="r2">${cs.kg?`${cs.kg.toLocaleString('en-MY')} kg sold · ${fmt(cs.rm)}`:'no sale recorded that day'}</div></div>
+      <div class="r2">${cs.kg?`${cs.kg.toLocaleString('en-MY')} kg sold · ${fmt(cs.rm)}`:`no sale recorded · <button class="linkbtn" style="padding:0; font-size:12.5px" onclick="recordSaleFor('${p.id}','${d}')">Record sale</button>`}</div></div>
       <button class="linkbtn" style="color:var(--exp)" onclick="removeCollection('${p.id}','${d}')">${svg('trash')}</button>
     </div>`;
   }
   return `<div>${rows}</div>`;
+}
+function recordSaleFor(pid, date){
+  const p=livePlantings().find(x=>x.id===pid); if(!p) return;
+  cropForm=null;
+  startRecord('Sale');                 /* fresh basket + switch to Record tab */
+  basket.farm=p.farm; basket.date=date;
+  const ln=basket.lines[0];
+  ln.category=p.produce;
+  const lp=lastPriceFor(p.produce, ln.grade);
+  ln.price=lp!=null?String(lp):''; ln.pAuto=lp!=null;
+  renderRecord();
+  toast('Backdated sale · '+esc(p.produce)+' · '+relDay(date));
 }
 function addCollectionUI(pid){
   const p=livePlantings().find(x=>x.id===pid); if(!p) return;
@@ -2002,6 +2026,53 @@ function removeCollection(pid, date){
   p.collections=p.collections.filter(d=>d!==date); p.updatedAt=nowMs();
   save(); toast('Removed from log');
   renderCropForm();
+}
+
+/* Planning estimate: average kg over the last few collection days that had sales */
+function expectedKg(p){
+  const ds=(p.collections||[]).slice().reverse();
+  const vals=[];
+  for(const d of ds){
+    const cs=collectionSales(p, d);
+    if(cs.kg>0) vals.push(cs.kg);
+    if(vals.length>=3) break;
+  }
+  if(!vals.length) return null;
+  return Math.round(vals.reduce((a,b)=>a+b,0)/vals.length);
+}
+
+/* ---- Coming up: the next 7 days, day by day, farm by farm ---- */
+function upcomingHTML(){
+  const today=todayStr();
+  const items=[];
+  for(const p of livePlantings()){
+    if(p.status==='ended') continue;
+    const i=cropInfo(p);
+    if(i.phase==='harvesting'){
+      const d=i.due?today:i.nextDue;
+      if(dayDiff(today,d)>=0 && dayDiff(today,d)<=7)
+        items.push({date:d, farm:p.farm, produce:p.produce, kind:'collect', kg:expectedKg(p)});
+    }else{
+      const d=i.ready?today:p.expectFirst;
+      if(dayDiff(today,d)>=0 && dayDiff(today,d)<=7)
+        items.push({date:d, farm:p.farm, produce:p.produce, kind:'first', kg:null});
+    }
+  }
+  if(!items.length) return '';
+  const days={}; for(const it of items) (days[it.date]=days[it.date]||[]).push(it);
+  let html=`<h2 class="sec">Coming up <span class="side">next 7 days</span></h2><div class="card">`;
+  for(const d of Object.keys(days).sort()){
+    const lbl = d===today?'Today':(d===addDays(today,1)?'Tomorrow':dowLabel(d)+' '+shortDate(d));
+    const byFarm={}; for(const it of days[d]) (byFarm[it.farm]=byFarm[it.farm]||[]).push(it);
+    const parts=S.settings.farms.map(f=>f.name).filter(fn=>byFarm[fn]).map(fn=>{
+      const crops=byFarm[fn].map(it=>
+        esc(it.produce)+(it.kind==='first'?' <span class="hint">first harvest</span>':'')+(it.kg?` · ~${it.kg} kg`:'')
+      ).join(', ');
+      return `<b>${esc(fn)}</b> — ${crops}`;
+    }).join('<br>');
+    html+=`<div class="uprow ${d===today?'tdy':''}"><div class="ud">${lbl}</div><div class="uc">${parts}</div></div>`;
+  }
+  return html+`</div>`;
 }
 
 /* ---- Home: today's farm run ---- */
@@ -2022,9 +2093,10 @@ function farmRunHTML(){
           <button class="collectbtn" onclick="openStartHarvest('${p.id}')">${svg('basket')} Start</button></div>`;
       } else if(i.phase==='harvesting' && i.due){
         dueTotal++;
-        const why = p.interval===1 && i.wait>1 ? `<span class="wait">${i.wait} days picked &amp; waiting</span>`
+        const ekg=expectedKg(p);
+        const why = (p.interval===1 && i.wait>1 ? `<span class="wait">${i.wait} days picked &amp; waiting</span>`
           : (i.wait>p.interval ? `<span class="wait">${i.wait-p.interval}d overdue</span> · ${intervalLabel(p.interval).toLowerCase()}`
-          : intervalLabel(p.interval));
+          : intervalLabel(p.interval))) + (ekg?` · ~${ekg} kg`:'');
         rows+=`<div class="runrow"><div class="cic harv" style="width:34px;height:34px">${svg('basket')}</div>
           <div class="rmain"><div class="r1">${esc(p.produce)}</div><div class="r2">${why}</div></div>
           <button class="collectbtn" onclick="markCollected('${p.id}')">${svg('check')} Collected</button></div>`;
