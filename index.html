@@ -401,11 +401,12 @@ let summarySel=null, summaryScope='All';
 let basket=null;   /* record screen working set */
 
 function defaultCropDefaults(){
-  /* days from planting to first harvest, and days between collections once producing */
+  /* Day 1 = TRANSPLANTING (seedling from tray into soil), not sowing.
+     maturity = days from transplant to first harvest; interval = days between collections. */
   return {
-    'Terung':{maturity:60, interval:3}, 'Tomatoes':{maturity:70, interval:3},
-    'Peria':{maturity:50, interval:2}, 'Labu Air':{maturity:55, interval:1},
-    'Timun':{maturity:35, interval:2}, 'Chili':{maturity:75, interval:7}
+    'Terung':{maturity:45, interval:3}, 'Tomatoes':{maturity:60, interval:3},
+    'Peria':{maturity:45, interval:2}, 'Labu Air':{maturity:45, interval:1},
+    'Timun':{maturity:30, interval:2}, 'Chili':{maturity:70, interval:7}
   };
 }
 function defaultState(){
@@ -481,7 +482,9 @@ function migrate(d){
     if(p.deleted===undefined) p.deleted=false;
     if(p.notes===undefined) p.notes='';
   }
-  set.dataVersion=7;
+  /* v8: crop day-1 convention is transplanting; recalibrate seeded defaults once */
+  if((set.dataVersion||0)<8) set.cropDefaults=defaultCropDefaults();
+  set.dataVersion=8;
   return d;
 }
 
@@ -566,15 +569,24 @@ function periodStats(sel){
   const farms=S.settings.farms.map(f=>f.name);
   const st={ sales:0, expenses:0, salary:0, commission:0, salesKg:0, byFarm:{}, byProduce:{}, byFarmProduce:{}, hasBoth:false };
   for(const fn of farms){ st.byFarm[fn]={sales:0, expenses:0, salary:0, commission:0, kg:0}; st.byFarmProduce[fn]={}; }
+  /* Commission accrues as an expense at the moment of sale (kg × effective-dated
+     rate), on farms that run a commission scheme. It must NOT be derived from the
+     current worker roster: deactivating a worker who leaves would silently erase
+     his historical commission from past months' P&L. Who receives the money (and
+     the split) is a payout-time question; what the business owes is a sale-time
+     fact. To end a scheme, set rates to 0 from an effective month. */
+  const comFarms={}; for(const w of S.settings.workers){ if(w.earnsCommission) comFarms[w.farm]=true; }
   for(const e of live()){
     if(!inPeriod(e,sel)) continue;
     if(e.type==='Sale'){
       st.sales+=e.amount; st.salesKg+=e.qty||0;
       if(e.farm==='Both') st.hasBoth=true;
       const key=e.category+(e.grade?' ('+e.grade+')':'');
+      const r=e.qty?rateFor(e.category, e.grade||'', e.date):0;
       for(const fn of farms){
         const sh=farmShare(e,fn); if(!sh) continue;
         st.byFarm[fn].sales+=e.amount*sh; st.byFarm[fn].kg+=(e.qty||0)*sh;
+        if(r && comFarms[fn]){ const c=e.qty*r*sh; st.commission+=c; st.byFarm[fn].commission+=c; }
         if(!st.byFarmProduce[fn][key]) st.byFarmProduce[fn][key]={kg:0, rm:0};
         st.byFarmProduce[fn][key].kg+=(e.qty||0)*sh; st.byFarmProduce[fn][key].rm+=e.amount*sh;
       }
@@ -591,12 +603,6 @@ function periodStats(sel){
       const sal=salaryFor(name,ym); if(!sal) continue;
       st.salary+=sal; const farm=farmOfWorker(name);
       if(st.byFarm[farm]) st.byFarm[farm].salary+=sal;
-    }
-    for(const w of S.settings.workers){
-      if(!w.active) continue;
-      const com=commissionFor(w.name,ym); if(!com) continue;
-      st.commission+=com;
-      if(st.byFarm[w.farm]) st.byFarm[w.farm].commission+=com;
     }
   }
   st.costs=st.expenses+st.salary+st.commission;
@@ -1718,7 +1724,7 @@ function cropCard(p){
   const i=cropInfo(p);
   let badge='', sub='', stat='', btn='', icCls='grow', bar='';
   if(i.phase==='growing'){
-    sub=`Planted ${dateLabel(p.planted)}`;
+    sub=`Transplanted ${dateLabel(p.planted)}`;
     bar=`<div class="cropbar"><i style="width:${Math.round(i.progress*100)}%"></i></div>`;
     if(i.ready){
       badge=`<span class="badge due">Ready</span>`;
@@ -1809,9 +1815,9 @@ function renderCropForm(){
     <label class="f">Produce</label>
     <div class="chips">${set.produce.filter(p=>p!=='Other Produce').map(p=>`<button class="chip ${c.produce===p?'on':''}" onclick="cfSetProduce('${esc(p)}')">${esc(p)}</button>`).join('')}
       <button class="chip add" onclick="cfAddProduce()">+ New</button></div>
-    <label class="f">Planted on</label>
+    <label class="f">Transplanted on <span class="hint">· seedlings into the soil = day 1</span></label>
     <input type="date" value="${c.planted}" oninput="cropForm.planted=this.value; cfHint()">
-    <label class="f">Days to first harvest <span class="hint">· from planting</span></label>
+    <label class="f">Days to first harvest <span class="hint">· counted from transplanting</span></label>
     <input type="number" inputmode="numeric" min="1" value="${esc(c.maturity)}" oninput="cropForm.maturity=this.value; cfHint()">
     <div class="note" id="fhHint" style="margin:7px 3px 0"></div>
     <label class="f">Harvest rhythm <span class="hint">· once producing</span></label>
@@ -1888,7 +1894,7 @@ function saveCropForm(){
     S.plantings.push({ id:puid(), farm:c.farm, produce:c.produce, planted:c.planted,
       expectFirst:expect, interval:iv, status:'growing', firstHarvest:null, lastCollected:null,
       ended:null, notes:(c.notes||'').trim(), updatedAt:nowMs(), deleted:false });
-    toast(c.produce+' planted · first harvest ~'+shortDate(expect));
+    toast(c.produce+' transplanted · first harvest ~'+shortDate(expect));
   }
   /* remember what was used, so next planting of this produce is prefilled */
   if(!S.settings.cropDefaults) S.settings.cropDefaults={};
