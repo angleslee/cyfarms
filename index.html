@@ -484,7 +484,12 @@ function migrate(d){
   }
   /* v8: crop day-1 convention is transplanting; recalibrate seeded defaults once */
   if((set.dataVersion||0)<8) set.cropDefaults=defaultCropDefaults();
-  set.dataVersion=8;
+  /* v9: collections become an append-only log (history, not a single pointer) */
+  for(const p of d.plantings){
+    if(!Array.isArray(p.collections)) p.collections = p.lastCollected ? [p.lastCollected] : [];
+    delete p.lastCollected;
+  }
+  set.dataVersion=9;
   return d;
 }
 
@@ -1582,6 +1587,15 @@ function addDays(ds, n){ const [y,m,d]=ds.split('-').map(Number); const dt=new D
 function dayDiff(a,b){ /* whole days from a to b */ const [y1,m1,d1]=a.split('-').map(Number),[y2,m2,d2]=b.split('-').map(Number); return Math.round((new Date(y2,m2-1,d2)-new Date(y1,m1-1,d1))/86400000); }
 function puid(){ return 'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
 function livePlantings(){ return (S.plantings||[]).filter(p=>!p.deleted); }
+function lastCol(p){ return (p.collections&&p.collections.length)?p.collections[p.collections.length-1]:null; }
+function addCollection(p, date){
+  if(!p.collections) p.collections=[];
+  if(p.collections.includes(date)) return false;
+  p.collections.push(date); p.collections.sort();
+  if(p.firstHarvest && date<p.firstHarvest) p.firstHarvest=date; /* log is truth; widen window */
+  p.updatedAt=nowMs(); return true;
+}
+function relDay(ds){ const t=todayStr(); return ds===t?'today':(ds===addDays(t,-1)?'yesterday':dateLabel(ds)); }
 
 /* Derived daily status. The schedule anchors on the LAST ACTUAL collection,
    not a fixed calendar — reality drives the plan, never the other way round. */
@@ -1594,7 +1608,7 @@ function cropInfo(p){
     const dLeft=dayDiff(today, p.expectFirst);
     return {phase:'growing', dLeft, progress:Math.min(1, done/total), ready:dLeft<=0};
   }
-  const anchor=p.lastCollected || p.firstHarvest || p.expectFirst;
+  const anchor=lastCol(p) || p.firstHarvest || p.expectFirst;
   const wait=Math.max(0, dayDiff(anchor, today));
   const nextDue=addDays(anchor, p.interval);
   return {phase:'harvesting', anchor, wait, nextDue, due: wait>=p.interval, dueTomorrow: nextDue===addDays(today,1)};
@@ -1638,9 +1652,9 @@ function autoCollectFromSale(farm, date, categories){
     if(p.farm!==farm || !cats[p.produce] || p.status==='ended') continue;
     if(p.status==='growing'){
       if(dayDiff(p.planted, date)<7) continue; /* a sale days after planting is a different batch */
-      p.status='harvesting'; p.firstHarvest=date; p.lastCollected=date; p.updatedAt=nowMs(); n++;
-    } else if(!p.lastCollected || date>p.lastCollected){
-      p.lastCollected=date; p.updatedAt=nowMs(); n++;
+      p.status='harvesting'; p.firstHarvest=date; addCollection(p, date); p.updatedAt=nowMs(); n++;
+    } else if(addCollection(p, date)){
+      n++;
     }
   }
   return n;
@@ -1648,15 +1662,32 @@ function autoCollectFromSale(farm, date, categories){
 
 function markCollected(id, date){
   const p=livePlantings().find(x=>x.id===id); if(!p) return;
-  p.lastCollected=date||todayStr(); p.updatedAt=nowMs();
-  save(); toast(p.produce+' marked collected');
+  const d=date||todayStr();
+  if(!addCollection(p, d)){ toast('Already logged for '+relDay(d)); return; }
+  save(); toast(p.produce+' collected · '+relDay(d));
   renderTab(tab);
 }
-function startHarvest(id){
+function openStartHarvest(id){
   const p=livePlantings().find(x=>x.id===id); if(!p) return;
-  const d=todayStr();
-  p.status='harvesting'; p.firstHarvest=d; p.lastCollected=d; p.updatedAt=nowMs();
-  save(); toast('Harvesting started · '+p.produce);
+  showSheet(`
+    <h3>Start harvesting</h3>
+    <div class="sub">${esc(p.produce)} · ${esc(p.farm)}</div>
+    <label class="f" for="shFirst">First harvest was on</label>
+    <input id="shFirst" type="date" value="${todayStr()}" max="${todayStr()}">
+    <label class="f" for="shLast">Most recent collection <span class="hint">· if it started a while ago</span></label>
+    <input id="shLast" type="date" value="${todayStr()}" max="${todayStr()}">
+    <button class="savebtn" style="background:var(--field); margin-top:16px" onclick="doStartHarvest('${p.id}')">${svg('basket','ic')} Start harvesting</button>
+  `);
+}
+function doStartHarvest(id){
+  const p=livePlantings().find(x=>x.id===id); if(!p) return;
+  const f=document.getElementById('shFirst').value, l=document.getElementById('shLast').value||f;
+  if(!f){ toast('Pick the first harvest date'); return; }
+  if(f<p.planted){ toast('First harvest can\'t be before transplanting'); return; }
+  if(l<f){ toast('Last collection can\'t be before the first harvest'); return; }
+  p.status='harvesting'; p.firstHarvest=f; p.collections=[]; addCollection(p,f); if(l!==f) addCollection(p,l);
+  p.updatedAt=nowMs();
+  closeSheet(); save(); toast('Harvesting · '+p.produce+' · since '+relDay(f));
   renderTab(tab);
 }
 function endPlanting(id){
@@ -1729,14 +1760,15 @@ function cropCard(p){
     if(i.ready){
       badge=`<span class="badge due">Ready</span>`;
       stat=i.dLeft===0?'Expected first harvest today':`Expected ${Math.abs(i.dLeft)} day${Math.abs(i.dLeft)>1?'s':''} ago`;
-      btn=`<button class="collectbtn" onclick="startHarvest('${p.id}')">${svg('basket')} Start harvest</button>`;
+      btn=`<button class="collectbtn" onclick="openStartHarvest('${p.id}')">${svg('basket')} Start harvest</button>`;
     }else{
       badge=`<span class="badge grow">Growing</span>`;
       stat=`First harvest in <b>${i.dLeft} day${i.dLeft>1?'s':''}</b> · ${shortDate(p.expectFirst)}`;
     }
   } else {
     icCls='harv';
-    sub=`${intervalLabel(p.interval)} · last collected ${p.lastCollected?dateLabel(p.lastCollected):'—'}`;
+    const lc=lastCol(p);
+    sub=`${intervalLabel(p.interval)} · last collected ${lc?relDay(lc):'—'}`;
     if(i.due){
       badge=`<span class="badge due">Due</span>`;
       stat = p.interval===1 && i.wait>1
@@ -1769,13 +1801,14 @@ function openCropForm(id){
     const p=livePlantings().find(x=>x.id===id); if(!p) return;
     cropForm={ id, farm:p.farm, produce:p.produce, planted:p.planted,
       maturity:String(Math.max(1,dayDiff(p.planted,p.expectFirst))), interval:String(p.interval),
-      notes:p.notes||'', status:p.status, firstHarvest:p.firstHarvest||'', lastCollected:p.lastCollected||'' };
+      notes:p.notes||'', status:p.status, firstHarvest:p.firstHarvest||'' };
   }else{
     const d=S.settings.cropDefaults||{};
     const prod=S.settings.produce[0];
     const def=d[prod]||{maturity:60, interval:3};
     cropForm={ id:null, farm:pickFarm(), produce:prod, planted:todayStr(),
-      maturity:String(def.maturity), interval:String(def.interval), notes:'', status:'growing' };
+      maturity:String(def.maturity), interval:String(def.interval), notes:'', status:'growing',
+      stage:'growing', firstHarvest:'', lastColIn:'' };
   }
   switchTab('crops');
 }
@@ -1797,6 +1830,7 @@ function cfAddProduce(){
   cfSetProduce(name);
 }
 function cfSetInterval(v){ cropForm.interval=String(v); renderCropForm(); }
+function cfSetStage(st){ cropForm.stage=st; renderCropForm(); }
 function cfHint(){
   const el=document.getElementById('fhHint'); if(!el) return;
   const m=Math.max(1, Math.round(Number(cropForm.maturity)||0));
@@ -1816,10 +1850,20 @@ function renderCropForm(){
     <div class="chips">${set.produce.filter(p=>p!=='Other Produce').map(p=>`<button class="chip ${c.produce===p?'on':''}" onclick="cfSetProduce('${esc(p)}')">${esc(p)}</button>`).join('')}
       <button class="chip add" onclick="cfAddProduce()">+ New</button></div>
     <label class="f">Transplanted on <span class="hint">· seedlings into the soil = day 1</span></label>
-    <input type="date" value="${c.planted}" oninput="cropForm.planted=this.value; cfHint()">
-    <label class="f">Days to first harvest <span class="hint">· counted from transplanting</span></label>
+    <input type="date" value="${c.planted}" max="${todayStr()}" oninput="cropForm.planted=this.value; cfHint()">
+    ${!c.id?`<label class="f">Where is it now?</label>
+    <div class="chips">
+      <button class="chip ${c.stage==='growing'?'on':''}" onclick="cfSetStage('growing')">Still growing</button>
+      <button class="chip ${c.stage==='harvesting'?'on':''}" onclick="cfSetStage('harvesting')">Already harvesting</button>
+    </div>`:''}
+    ${(!c.id && c.stage==='harvesting')?`
+    <label class="f">First harvest was on</label>
+    <input type="date" value="${c.firstHarvest||''}" max="${todayStr()}" oninput="cropForm.firstHarvest=this.value">
+    <label class="f">Most recent collection <span class="hint">· so the schedule starts from reality</span></label>
+    <input type="date" value="${c.lastColIn||''}" max="${todayStr()}" oninput="cropForm.lastColIn=this.value">`
+    :`<label class="f">Days to first harvest <span class="hint">· counted from transplanting</span></label>
     <input type="number" inputmode="numeric" min="1" value="${esc(c.maturity)}" oninput="cropForm.maturity=this.value; cfHint()">
-    <div class="note" id="fhHint" style="margin:7px 3px 0"></div>
+    <div class="note" id="fhHint" style="margin:7px 3px 0"></div>`}
     <label class="f">Harvest rhythm <span class="hint">· once producing</span></label>
     <div class="chips">
       ${preset.map(n=>`<button class="chip ${iv===n?'on':''}" onclick="cfSetInterval(${n})">${n===1?'Daily':'Every '+n+'d'}</button>`).join('')}
@@ -1846,12 +1890,13 @@ function renderCropForm(){
       </div>`;
     }
     html+=`<div class="card" style="padding:16px 15px; margin-top:12px">
-      <label class="f" style="margin-top:2px">Harvest log</label>
-      <div class="row2">
-        <div><div class="note" style="margin:0 0 5px 2px">First harvest</div>
-          <input type="date" value="${c.firstHarvest||''}" oninput="cropForm.firstHarvest=this.value"></div>
-        <div><div class="note" style="margin:0 0 5px 2px">Last collected</div>
-          <input type="date" value="${c.lastCollected||''}" oninput="cropForm.lastCollected=this.value"></div>
+      <label class="f" style="margin-top:2px">First harvest was on</label>
+      <input type="date" value="${c.firstHarvest||''}" max="${todayStr()}" oninput="cropForm.firstHarvest=this.value">
+      <label class="f">Collection log <span class="hint">· each pickup, matched to that day's sales</span></label>
+      ${collectionLogHTML(c.id)}
+      <div class="row2" style="margin-top:10px; align-items:center">
+        <input type="date" id="clAdd" max="${todayStr()}">
+        <button class="collectbtn ghost" style="justify-content:center" onclick="addCollectionUI('${c.id}')">${svg('plus')} Log a date</button>
       </div>
     </div>`;
   }
@@ -1875,32 +1920,88 @@ function renderCropForm(){
 }
 function saveCropForm(){
   const c=cropForm;
-  const m=Math.round(Number(c.maturity)||0), iv=Math.round(Number(c.interval)||0);
-  if(!c.planted){ toast('Pick the planting date'); return; }
-  if(m<1){ toast('Days to first harvest must be at least 1'); return; }
+  const iv=Math.round(Number(c.interval)||0);
+  if(!c.planted){ toast('Pick the transplanting date'); return; }
   if(iv<1){ toast('Harvest rhythm must be at least 1 day'); return; }
-  const expect=addDays(c.planted, m);
+  const newHarv = !c.id && c.stage==='harvesting';
+  let m, expect;
+  if(newHarv){
+    if(!c.firstHarvest){ toast('When was the first harvest?'); return; }
+    if(c.firstHarvest<c.planted){ toast('First harvest can\'t be before transplanting'); return; }
+    if(c.lastColIn && c.lastColIn<c.firstHarvest){ toast('Last collection can\'t be before the first harvest'); return; }
+    m=Math.max(1, dayDiff(c.planted, c.firstHarvest));   /* learn real maturity from the field */
+    expect=c.firstHarvest;
+  }else{
+    m=Math.round(Number(c.maturity)||0);
+    if(m<1){ toast('Days to first harvest must be at least 1'); return; }
+    expect=addDays(c.planted, m);
+  }
   if(c.id){
     const p=livePlantings().find(x=>x.id===c.id); if(!p) return;
-    p.farm=c.farm; p.produce=c.produce; p.planted=c.planted; p.expectFirst=expect;
+    p.farm=c.farm; p.produce=c.produce; p.planted=c.planted;
     p.interval=iv; p.notes=(c.notes||'').trim();
-    if(p.status!=='growing'){
-      p.firstHarvest=c.firstHarvest||p.firstHarvest;
-      p.lastCollected=c.lastCollected||p.lastCollected;
-    }
+    if(p.status==='growing'){ p.expectFirst=expect; }
+    else if(c.firstHarvest){ p.firstHarvest=c.firstHarvest; }
     p.updatedAt=nowMs();
     toast('Planting updated');
   }else{
-    S.plantings.push({ id:puid(), farm:c.farm, produce:c.produce, planted:c.planted,
-      expectFirst:expect, interval:iv, status:'growing', firstHarvest:null, lastCollected:null,
-      ended:null, notes:(c.notes||'').trim(), updatedAt:nowMs(), deleted:false });
-    toast(c.produce+' transplanted · first harvest ~'+shortDate(expect));
+    const p={ id:puid(), farm:c.farm, produce:c.produce, planted:c.planted,
+      expectFirst:expect, interval:iv, status:newHarv?'harvesting':'growing',
+      firstHarvest:newHarv?c.firstHarvest:null, collections:[],
+      ended:null, notes:(c.notes||'').trim(), updatedAt:nowMs(), deleted:false };
+    if(newHarv){ addCollection(p, c.firstHarvest); if(c.lastColIn) addCollection(p, c.lastColIn); }
+    S.plantings.push(p);
+    toast(newHarv ? c.produce+' added · harvesting since '+relDay(c.firstHarvest)
+                  : c.produce+' transplanted · first harvest ~'+shortDate(expect));
   }
   /* remember what was used, so next planting of this produce is prefilled */
   if(!S.settings.cropDefaults) S.settings.cropDefaults={};
   S.settings.cropDefaults[c.produce]={maturity:m, interval:iv};
   S.settings.rev=(S.settings.rev||0)+1;
   save(); cropForm=null; renderCrops();
+}
+
+/* ---- collection log (append-only history, joined with sales) ---- */
+function collectionSales(p, date){
+  let kg=0, rm=0;
+  for(const e of live()){
+    if(e.type!=='Sale' || e.category!==p.produce || e.date!==date || !e.qty) continue;
+    const sh=farmShare(e, p.farm); if(!sh) continue;
+    kg+=e.qty*sh; rm+=e.amount*sh;
+  }
+  return {kg:round2(kg), rm:round2(rm)};
+}
+function collectionLogHTML(pid){
+  const p=livePlantings().find(x=>x.id===pid); if(!p) return '';
+  const dates=(p.collections||[]).slice().reverse();
+  if(!dates.length) return `<div class="note" style="margin:4px 2px">No collections logged yet.</div>`;
+  let rows='';
+  for(const d of dates){
+    const cs=collectionSales(p, d);
+    rows+=`<div class="runrow" style="padding:9px 2px">
+      <div class="rmain"><div class="r1" style="font-size:14px">${dowLabel(d)} ${shortDate(d)}${d===todayStr()?' · today':''}</div>
+      <div class="r2">${cs.kg?`${cs.kg.toLocaleString('en-MY')} kg sold · ${fmt(cs.rm)}`:'no sale recorded that day'}</div></div>
+      <button class="linkbtn" style="color:var(--exp)" onclick="removeCollection('${p.id}','${d}')">${svg('trash')}</button>
+    </div>`;
+  }
+  return `<div>${rows}</div>`;
+}
+function addCollectionUI(pid){
+  const p=livePlantings().find(x=>x.id===pid); if(!p) return;
+  const v=document.getElementById('clAdd').value;
+  if(!v){ toast('Pick a date first'); return; }
+  if(v>todayStr()){ toast('Can\'t log a future collection'); return; }
+  if(p.planted && v<p.planted){ toast('Before transplanting date'); return; }
+  if(!addCollection(p, v)){ toast('That date is already logged'); return; }
+  save(); toast('Collection logged · '+relDay(v));
+  renderCropForm();
+}
+function removeCollection(pid, date){
+  const p=livePlantings().find(x=>x.id===pid); if(!p||!p.collections) return;
+  if(!confirm('Remove '+dateLabel(date)+' from the log?')) return;
+  p.collections=p.collections.filter(d=>d!==date); p.updatedAt=nowMs();
+  save(); toast('Removed from log');
+  renderCropForm();
 }
 
 /* ---- Home: today's farm run ---- */
@@ -1918,7 +2019,7 @@ function farmRunHTML(){
         dueTotal++;
         rows+=`<div class="runrow"><div class="cic grow" style="width:34px;height:34px">${svg('sprout')}</div>
           <div class="rmain"><div class="r1">${esc(p.produce)}</div><div class="r2">Ready for first harvest</div></div>
-          <button class="collectbtn" onclick="startHarvest('${p.id}')">${svg('basket')} Start</button></div>`;
+          <button class="collectbtn" onclick="openStartHarvest('${p.id}')">${svg('basket')} Start</button></div>`;
       } else if(i.phase==='harvesting' && i.due){
         dueTotal++;
         const why = p.interval===1 && i.wait>1 ? `<span class="wait">${i.wait} days picked &amp; waiting</span>`
@@ -1935,12 +2036,16 @@ function farmRunHTML(){
     }
     if(rows) groups+=`<div class="runfarm">${svg('leaf')} ${esc(fn)}</div>${rows}`;
   }
+  const doneToday=act.filter(p=>p.status==='harvesting' && lastCol(p)===todayStr()).map(p=>esc(p.produce)+' · '+esc(p.farm));
   let html=`<h2 class="sec">Farm run <span class="side">${dueTotal?dueTotal+' to collect':'nothing due'}</span></h2>`;
   if(dueTotal){
     html+=`<div class="runcard">${groups}</div>`;
-    if(nexts.length) html+=`<div class="note" style="margin:8px 6px 0">Tomorrow: ${nexts.join(' · ')}</div>`;
+    const bits=[];
+    if(doneToday.length) bits.push('Collected today: '+doneToday.join(', ')+' ✓');
+    if(nexts.length) bits.push('Tomorrow: '+nexts.join(' · '));
+    if(bits.length) html+=`<div class="note" style="margin:8px 6px 0">${bits.join('<br>')}</div>`;
   }else{
-    html+=`<div class="card"><div class="setrow" style="cursor:default"><div class="sl"><div class="s1">No collections due today</div><div class="s2">${nexts.length?('Tomorrow: '+nexts.join(' · ')):'Schedule is up to date'}</div></div><div class="sr" style="color:var(--field)">${svg('check')}</div></div></div>`;
+    html+=`<div class="card"><div class="setrow" style="cursor:default"><div class="sl"><div class="s1">No collections due today</div><div class="s2">${doneToday.length?('Collected today: '+doneToday.join(', ')+' ✓'):(nexts.length?('Tomorrow: '+nexts.join(' · ')):'Schedule is up to date')}</div></div><div class="sr" style="color:var(--field)">${svg('check')}</div></div></div>`;
   }
   return html;
 }
